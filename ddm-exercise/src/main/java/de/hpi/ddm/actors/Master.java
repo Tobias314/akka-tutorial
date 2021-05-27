@@ -2,8 +2,8 @@ package de.hpi.ddm.actors;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.TreeSet;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -14,6 +14,7 @@ import de.hpi.ddm.structures.BloomFilter;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import scala.Tuple2;
 
 public class Master extends AbstractLoggingActor {
 
@@ -23,6 +24,8 @@ public class Master extends AbstractLoggingActor {
 	
 	public static final String DEFAULT_NAME = "master";
 
+	public static final int REDUCED_PROBLEM_PACKAGE_SIZE = 100;
+
 	public static Props props(final ActorRef reader, final ActorRef collector, final BloomFilter welcomeData) {
 		return Props.create(Master.class, () -> new Master(reader, collector, welcomeData));
 	}
@@ -31,6 +34,7 @@ public class Master extends AbstractLoggingActor {
 		this.reader = reader;
 		this.collector = collector;
 		this.workers = new ArrayList<>();
+		this.currentWorker = 0;
 		this.largeMessageProxy = this.context().actorOf(LargeMessageProxy.props(), LargeMessageProxy.DEFAULT_NAME);
 		this.welcomeData = welcomeData;
 	}
@@ -54,6 +58,32 @@ public class Master extends AbstractLoggingActor {
 	public static class RegistrationMessage implements Serializable {
 		private static final long serialVersionUID = 3303081601659723997L;
 	}
+
+	@Data @AllArgsConstructor @NoArgsConstructor
+	public static class PwData implements Serializable{
+		long id;
+		String name;
+		String pwHash;
+		ArrayList<String> hintHashes;
+	}
+
+	@Data @AllArgsConstructor @NoArgsConstructor
+	public static class HintProblemMessage implements Serializable {
+		private static final long serialVersionUID = 3303085451659723997L;
+		ArrayList<PwData> data;
+		String pwChars;
+		int pwLength;
+		char excludedCharForHint;
+		public HintProblemMessage shallowCopy(){
+			return new HintProblemMessage(data, pwChars, pwLength, excludedCharForHint);
+		}
+	}
+
+	@Data @AllArgsConstructor @NoArgsConstructor
+	public static class ResultMessage implements Serializable {
+		private static final long serialVersionUID = 3303455451659723997L;
+		ArrayList<Tuple2<String, String>> data;
+	}
 	
 	/////////////////
 	// Actor State //
@@ -62,8 +92,14 @@ public class Master extends AbstractLoggingActor {
 	private final ActorRef reader;
 	private final ActorRef collector;
 	private final List<ActorRef> workers;
+	private int currentWorker;
 	private final ActorRef largeMessageProxy;
 	private final BloomFilter welcomeData;
+	private ArrayList<Worker.ReducedProblemMessage> reducedProblemList = new ArrayList();
+	private int resultCounter = 0;
+
+
+	HintProblemMessage problem = new HintProblemMessage();
 
 	private long startTime;
 	
@@ -87,6 +123,9 @@ public class Master extends AbstractLoggingActor {
 				.match(BatchMessage.class, this::handle)
 				.match(Terminated.class, this::handle)
 				.match(RegistrationMessage.class, this::handle)
+				.match(HintProblemMessage.class, this::handle)
+				.match(Worker.ReducedProblemMessage.class, this::handle)
+				.match(ResultMessage.class, this::handle)
 				// TODO: Add further messages here to share work between Master and Worker actors
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
@@ -94,7 +133,9 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(StartMessage message) {
 		this.startTime = System.currentTimeMillis();
-		
+		reducedProblemList = new ArrayList();
+		problem.data = new ArrayList<>();
+		resultCounter = 0;
 		this.reader.tell(new Reader.ReadMessage(), this.self());
 	}
 	
@@ -116,20 +157,99 @@ public class Master extends AbstractLoggingActor {
 
 		// TODO: Stop fetching lines from the Reader once an empty BatchMessage was received; we have seen all data then
 		if (message.getLines().isEmpty()) {
-			this.terminate();
-			return;
+			distributedHintProcessing();
+		}else{
+			for(String[] items : message.getLines()){
+				PwData pw = new Master.PwData();
+				pw.id = Long.valueOf(items[0]);
+				pw.name = items[1];
+				pw.pwHash = items[4];
+				pw.hintHashes = new ArrayList<>();
+				for(int i = 5; i<items.length; i++){
+					pw.hintHashes.add(items[i]);
+				}
+				problem.data.add(pw);
+			}
+			problem.pwChars =  message.getLines().get(0)[2];
+			problem.pwLength = Integer.valueOf(message.getLines().get(0)[3]);
+			this.reader.tell(new Reader.ReadMessage(), this.self());
 		}
+
 		
 		// TODO: Process the lines with the help of the worker actors
-		for (String[] line : message.getLines())
-			this.log().error("Need help processing: {}", Arrays.toString(line));
+		//for (String[] line : message.getLines())
+			//this.log().error("Need help processing: {}", Arrays.toString(line));
 		
 		// TODO: Send (partial) results to the Collector
-		this.collector.tell(new Collector.CollectMessage("If I had results, this would be one."), this.self());
+		//this.collector.tell(new Collector.CollectMessage("If I had results, this would be one."), this.self());
 		
 		// TODO: Fetch further lines from the Reader
-		this.reader.tell(new Reader.ReadMessage(), this.self());
-		
+	}
+
+	private void distributedHintProcessing(){
+		for(int i = 0; i<problem.pwChars.length(); i++){
+			String reducedChars = "";
+			char excluded = ' ';
+			for(int j = 0; j<problem.pwChars.length(); j++){
+				if(i!=j){
+					reducedChars += problem.pwChars.charAt(j);
+				}else{
+					excluded = problem.pwChars.charAt(j);
+				}
+			}
+			HintProblemMessage subProblem = problem.shallowCopy();
+			subProblem.pwChars = reducedChars;
+			subProblem.excludedCharForHint = excluded;
+			scheduleWork(subProblem);
+		}
+	}
+
+	private void scheduleWork(Object msg){
+		workers.get(currentWorker).tell(msg, this.self());
+		currentWorker= (currentWorker + 1) % workers.size();
+	}
+
+	protected void handle(Worker.ReducedProblemMessage reducedProblem){
+		reducedProblemList.add(reducedProblem);
+
+		if(reducedProblemList.size() == problem.pwChars.length()) {
+			Worker.ReducedProblemMessage merged  = new Worker.ReducedProblemMessage(new ArrayList<>(), reducedProblem.pwLength, reducedProblem.pwCharacters);
+			for(int i = 0; i < reducedProblemList.get(0).contrainedPws.size(); i++){
+				TreeSet<Character> notIncludedCharacters = new TreeSet<>();
+				for(Worker.ReducedProblemMessage msg : reducedProblemList){
+					notIncludedCharacters.addAll(msg.contrainedPws.get(i).notIncludedCharacters);
+				}
+				Worker.PwWithConstraints pwc =  reducedProblemList.get(0).contrainedPws.get(i);
+				pwc.notIncludedCharacters = notIncludedCharacters;
+				merged.contrainedPws.add(pwc);
+			}
+
+
+			Worker.ReducedProblemMessage reducedProblemPackage = new Worker.ReducedProblemMessage(new ArrayList<>(), reducedProblem.pwLength, problem.pwChars);
+			int count = 0;
+			for (Worker.PwWithConstraints constrainedPw : merged.contrainedPws) {
+				reducedProblemPackage.contrainedPws.add(constrainedPw);
+				count++;
+				if (count >= REDUCED_PROBLEM_PACKAGE_SIZE) {
+					scheduleWork(reducedProblemPackage);
+					reducedProblemPackage = new Worker.ReducedProblemMessage(new ArrayList<>(), reducedProblem.pwLength, problem.pwChars);
+				}
+			}
+			if(reducedProblemPackage.contrainedPws.size() > 0){
+				scheduleWork(reducedProblemPackage);
+			}
+		}
+	}
+
+	protected void handle(ResultMessage result){
+		for(Tuple2<String, String> namePw : result.data){
+			System.out.println("User with name " + namePw._1 + " has Pw " + namePw._2);
+			this.collector.tell(new Collector.CollectMessage("User with name " + namePw._1 + " has Pw " + namePw._2), this.self());
+		}
+		this.resultCounter += result.data.size();
+		if(resultCounter >= problem.data.size()){
+			terminate();
+		}
 	}
 	
 	protected void terminate() {
@@ -157,6 +277,10 @@ public class Master extends AbstractLoggingActor {
 		this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.WelcomeMessage(this.welcomeData), this.sender()), this.self());
 		
 		// TODO: Assign some work to registering workers. Note that the processing of the global task might have already started.
+	}
+
+	protected void handle(HintProblemMessage problem){
+
 	}
 	
 	protected void handle(Terminated message) {

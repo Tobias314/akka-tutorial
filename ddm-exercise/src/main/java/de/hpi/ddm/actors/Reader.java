@@ -85,7 +85,8 @@ public class Reader extends AbstractLoggingActor {
 		this.buffer.clear();
 		
 		String[] line;
-		while ((this.buffer.size() < this.bufferSize) && ((line = this.reader.readNext()) != null))
+		while ((this.buffer.size() < this.bufferSize) && ((line = this.reader.readNext()) != null)) {
 			this.buffer.add(line);
+		}
 	}
 }

@@ -177,11 +177,11 @@
 			<plugin>
 				<artifactId>maven-assembly-plugin</artifactId>
 				<configuration>
-					<finalName>assignment2</finalName>
+					<finalName>assignment3</finalName>
 					<appendAssemblyId>false</appendAssemblyId>
 					<archive>
 						<manifest>
-							<mainClass>de.hpi.ddm.TestMain</mainClass>
+							<mainClass>de.hpi.ddm.Main</mainClass>
 						</manifest>
 					</archive>
 					<descriptorRefs>

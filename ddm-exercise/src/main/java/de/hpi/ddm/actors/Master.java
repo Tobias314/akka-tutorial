@@ -1,9 +1,7 @@
 package de.hpi.ddm.actors;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.TreeSet;
+import java.util.*;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -74,8 +72,9 @@ public class Master extends AbstractLoggingActor {
 		String pwChars;
 		int pwLength;
 		char excludedCharForHint;
+		ArrayList<Tuple2<String, Character>> permutationsToTry;
 		public HintProblemMessage shallowCopy(){
-			return new HintProblemMessage(data, pwChars, pwLength, excludedCharForHint);
+			return new HintProblemMessage(data, pwChars, pwLength, excludedCharForHint, permutationsToTry);
 		}
 	}
 
@@ -97,6 +96,11 @@ public class Master extends AbstractLoggingActor {
 	private final BloomFilter welcomeData;
 	private ArrayList<Worker.ReducedProblemMessage> reducedProblemList = new ArrayList();
 	private int resultCounter = 0;
+	Worker.ReducedProblemMessage mergedReducedProblem;
+	int runningHintWorkPackages = 0;
+	boolean allHintWorkPackagesSent = false;
+	ArrayList<Tuple2<String, Character>> permutation_buffer = new ArrayList<>();
+	final static int PERMUTATION_PACKAGE_SIZE = 500000;
 
 
 	HintProblemMessage problem = new HintProblemMessage();
@@ -156,6 +160,14 @@ public class Master extends AbstractLoggingActor {
 
 		// TODO: Stop fetching lines from the Reader once an empty BatchMessage was received; we have seen all data then
 		if (message.getLines().isEmpty()) {
+			ArrayList<Worker.PwWithConstraints> constrainedPws = new ArrayList<>();
+			for(int i = 0; i<problem.data.size(); i++){
+				TreeSet<Character> ts = new TreeSet<>();
+				constrainedPws.add(new Worker.PwWithConstraints(problem.data.get(i).name, problem.data.get(i).pwHash, ts));
+			}
+			mergedReducedProblem = new Worker.ReducedProblemMessage(constrainedPws, problem.pwLength, problem.pwChars);
+			runningHintWorkPackages = 0;
+			allHintWorkPackagesSent = false;
 			distributedHintProcessing();
 		}else{
 			for(String[] items : message.getLines()){
@@ -187,20 +199,19 @@ public class Master extends AbstractLoggingActor {
 
 	private void distributedHintProcessing(){
 		for(int i = 0; i<problem.pwChars.length(); i++){
-			String reducedChars = "";
+			ArrayList<Character> reducedChars = new ArrayList<>();
 			char excluded = ' ';
 			for(int j = 0; j<problem.pwChars.length(); j++){
 				if(i!=j){
-					reducedChars += problem.pwChars.charAt(j);
+					reducedChars.add(problem.pwChars.charAt(j));
 				}else{
 					excluded = problem.pwChars.charAt(j);
 				}
 			}
-			HintProblemMessage subProblem = problem.shallowCopy();
-			subProblem.pwChars = reducedChars;
-			subProblem.excludedCharForHint = excluded;
-			scheduleWork(subProblem);
+			heapPermutation(reducedChars, reducedChars.size(), reducedChars.size(), excluded);
 		}
+		scheduleHintWorkPackage();
+		allHintWorkPackagesSent = true;
 	}
 
 	private void scheduleWork(Object msg){
@@ -209,24 +220,15 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(Worker.ReducedProblemMessage reducedProblem){
-		reducedProblemList.add(reducedProblem);
+		for(int i = 0; i < reducedProblem.contrainedPws.size(); i++){
+			mergedReducedProblem.contrainedPws.get(i).notIncludedCharacters.addAll(reducedProblem.contrainedPws.get(i).notIncludedCharacters);
+		}
+		runningHintWorkPackages -= 1;
 
-		if(reducedProblemList.size() == problem.pwChars.length()) {
-			Worker.ReducedProblemMessage merged  = new Worker.ReducedProblemMessage(new ArrayList<>(), reducedProblem.pwLength, reducedProblem.pwCharacters);
-			for(int i = 0; i < reducedProblemList.get(0).contrainedPws.size(); i++){
-				TreeSet<Character> notIncludedCharacters = new TreeSet<>();
-				for(Worker.ReducedProblemMessage msg : reducedProblemList){
-					notIncludedCharacters.addAll(msg.contrainedPws.get(i).notIncludedCharacters);
-				}
-				Worker.PwWithConstraints pwc =  reducedProblemList.get(0).contrainedPws.get(i);
-				pwc.notIncludedCharacters = notIncludedCharacters;
-				merged.contrainedPws.add(pwc);
-			}
-
-
+		if(runningHintWorkPackages == 0 && allHintWorkPackagesSent) {
 			Worker.ReducedProblemMessage reducedProblemPackage = new Worker.ReducedProblemMessage(new ArrayList<>(), reducedProblem.pwLength, problem.pwChars);
 			int count = 0;
-			for (Worker.PwWithConstraints constrainedPw : merged.contrainedPws) {
+			for (Worker.PwWithConstraints constrainedPw : mergedReducedProblem.contrainedPws) {
 				reducedProblemPackage.contrainedPws.add(constrainedPw);
 				count++;
 				if (count >= REDUCED_PROBLEM_PACKAGE_SIZE) {
@@ -281,5 +283,44 @@ public class Master extends AbstractLoggingActor {
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
 		this.log().info("Unregistered {}", message.getActor());
+	}
+
+	private void scheduleHintWorkPackage(){
+		HintProblemMessage subProblem = problem.shallowCopy();
+		subProblem.permutationsToTry = permutation_buffer;
+		runningHintWorkPackages += 1;
+		scheduleWork(subProblem);
+		permutation_buffer = new ArrayList<>();
+	}
+
+	private void addPermuation(String permutation, char missingCharacter){
+		permutation_buffer.add(new Tuple2<>(permutation, missingCharacter));
+		if(permutation_buffer.size()>= PERMUTATION_PACKAGE_SIZE){
+			scheduleHintWorkPackage();
+		}
+	}
+
+	void heapPermutation(ArrayList<Character> characters, int size, int n, char currentlyAvoiding)
+	{
+		// if size becomes 1 then prints the obtained
+		// permutation
+		if (size == 1) {
+			String perm = "";
+			for(Character c : characters){perm += c;}
+			addPermuation(perm, currentlyAvoiding);
+			return;
+		}
+		for (int i = 0; i < size; i++) {
+			heapPermutation(characters, size - 1, n, currentlyAvoiding);
+
+			// if size is odd, swap 0th i.e (first) and
+			// (size-1)th i.e (last) element
+			if (size % 2 == 1){
+				Collections.swap(characters, 0, size - 1);
+			}
+			else {
+				Collections.swap(characters, i, size - 1);
+			}
+		}
 	}
 }

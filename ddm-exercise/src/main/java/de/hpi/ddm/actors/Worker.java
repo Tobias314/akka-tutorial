@@ -21,6 +21,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import akka.cluster.Member;
 import akka.cluster.MemberStatus;
+import scala.Char;
 import scala.Tuple2;
 
 public class Worker extends AbstractLoggingActor {
@@ -160,11 +161,6 @@ public class Worker extends AbstractLoggingActor {
 		this.sender().tell(resultMsg, this.self());
 	}
 
-	static void printAllKLength(ArrayList<Character> set, int k, String toTest)
-	{
-		int n = set.size();
-		testAllKLengthRec(set, "", set.size(), k, toTest);
-	}
 	static String testAllKLengthRec(ArrayList<Character> set, String prefix, int n, int k, String toTest)
 	{
 		if (k == 0){
@@ -185,6 +181,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.HintProblemMessage problem){
+		//System.out.println("Starting hint ecryption package");
 		ArrayList<PwWithConstraints> pwWithConstraints = new ArrayList<>();
 		HashMap <String, ArrayList<Integer>> hintMap = new HashMap<>();
 		for(int i = 0; i<problem.data.size(); i++){
@@ -196,49 +193,23 @@ public class Worker extends AbstractLoggingActor {
 			}
 		}
 		ReducedProblemMessage reducedProblem = new ReducedProblemMessage(pwWithConstraints, problem.pwLength, problem.pwChars);
-
-		ArrayList<Character> chars = new ArrayList<Character>();
-		for (char c : problem.pwChars.toCharArray()) {
-			chars.add(c);
-		}
 		//System.out.println("creating permutations with " + problem.excludedCharForHint +" char missing");
 
-		heapPermutation(chars, chars.size(), chars.size(), reducedProblem, hintMap, problem.excludedCharForHint);
+		for(Tuple2<String, Character> perm : problem.permutationsToTry){
+			String h = hash(perm._1);
+			ArrayList<Integer> res = hintMap.get(h);
+			if(res != null){
+				for(int i : res){
+					//System.out.println("removing character " + perm._2 + "from possible characters");
+					reducedProblem.contrainedPws.get(i).notIncludedCharacters.add(perm._2);
+				}
+			}
+		}
 
 		//System.out.println("finished creating permutations with " + problem.excludedCharForHint +" char missing");
 
+		//System.out.println("finishing hint encryption package");
 		this.sender().tell(reducedProblem, this.self());
-	}
-
-	void heapPermutation(ArrayList<Character> characters, int size, int n, ReducedProblemMessage reducedProblem,
-						 HashMap<String, ArrayList<Integer>> hintMap, char currentlyAvoiding)
-	{
-		// if size becomes 1 then prints the obtained
-		// permutation
-		if (size == 1) {
-			String h = hash(stringFromCharacterArrayList(characters));
-			ArrayList<Integer> tmp =hintMap.get(h);
-			if(tmp != null){
-				for(int i : tmp){
-					//System.out.println("removing character " + currentlyAvoiding + "from possible characters");
-					reducedProblem.contrainedPws.get(i).notIncludedCharacters.add(currentlyAvoiding);
-				}
-			}
-			return;
-		}
-
-		for (int i = 0; i < size; i++) {
-			heapPermutation(characters, size - 1, n, reducedProblem, hintMap, currentlyAvoiding);
-
-			// if size is odd, swap 0th i.e (first) and
-			// (size-1)th i.e (last) element
-			if (size % 2 == 1){
-				Collections.swap(characters, 0, size - 1);
-			}
-			else {
-				Collections.swap(characters, i, size - 1);
-			}
-		}
 	}
 
 	private String stringFromCharacterArrayList(ArrayList<Character> list){

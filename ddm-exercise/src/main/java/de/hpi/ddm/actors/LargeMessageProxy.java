@@ -26,7 +26,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 	public static final String DEFAULT_NAME = "largeMessageProxy";
 	public static final int MESSAGE_SIZE = 100;
-	
+
 	public static Props props() {
 		return Props.create(LargeMessageProxy.class);
 	}
@@ -34,19 +34,11 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	////////////////////
 	// Actor Messages //
 	////////////////////
-	
+
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class LargeMessage<T> implements Serializable {
 		private static final long serialVersionUID = 2940665245810221108L;
 		private T message;
-		private ActorRef receiver;
-	}
-
-	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class BytesMessage<T> implements Serializable {
-		private static final long serialVersionUID = 4057807743872319842L;
-		private T bytes;
-		private ActorRef sender;
 		private ActorRef receiver;
 	}
 
@@ -63,17 +55,17 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class AckMessage implements Serializable {
-		private static final long serialVersionUID = 4257807743872319842L;
+		private static final long serialVersionUID = 4257807743872319855L;
 		private long bytesReceived = 0L;
 	}
-	
+
 	/////////////////
 	// Actor State //
 	/////////////////
 
 	Queue<Triple<ActorRef, ActorRef, byte[]>> messageQueue = new LinkedList<>();
 	HashMap<ActorRef, ArrayList<SendMessage>> receiverBuffer = new HashMap<>();
-	
+
 	/////////////////////
 	// Actor Lifecycle //
 	/////////////////////
@@ -81,12 +73,11 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	////////////////////
 	// Actor Behavior //
 	////////////////////
-	
+
 	@Override
 	public Receive createReceive() {
 		return receiveBuilder()
 				.match(LargeMessage.class, this::handle)
-				.match(BytesMessage.class, this::handle)
 				.match(SendMessage.class, this::handle)
 				.match(AckMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
@@ -98,7 +89,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		ActorRef sender = this.sender();
 		ActorRef receiver = largeMessage.getReceiver();
 		ActorSelection receiverProxy = this.context().actorSelection(receiver.path().child(DEFAULT_NAME));
-		
+
 		// TODO: Implement a protocol that transmits the potentially very large message object.
 		// The following code sends the entire message wrapped in a BytesMessage, which will definitely fail in a distributed setting if the message is large!
 		// Solution options:
@@ -131,15 +122,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		receiverProxy.tell(msg, this.self());
 	}
 
-	private void handle(BytesMessage<?> message) {
-		// TODO: With option a): Store the message, ask for the next chunk and, if all chunks are present, reassemble the message's content, deserialize it and pass it to the receiver.
-		// The following code assumes that the transmitted bytes are the original message, which they shouldn't be in your proper implementation ;-)
-		message.getReceiver().tell(message.getBytes(), message.getSender());
-	}
-
 	private void handle(AckMessage message) {
-		// TODO: With option a): Store the message, ask for the next chunk and, if all chunks are present, reassemble the message's content, deserialize it and pass it to the receiver.
-		// The following code assumes that the transmitted bytes are the original message, which they shouldn't be in your proper implementation ;-)
 		if(!messageQueue.isEmpty()){
 			sendPackage(message.bytesReceived);
 		}
@@ -148,7 +131,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	private void handle(SendMessage message){
 		// TODO: With option a): Store the message, ask for the next chunk and, if all chunks are present, reassemble the message's content, deserialize it and pass it to the receiver.
 		// The following code assumes that the transmitted bytes are the original message, which they shouldn't be in your proper implementation ;-)
-		receiverBuffer.computeIfAbsent(message.senderProxy, s -> new ArrayList()).add(message);
+		receiverBuffer.computeIfAbsent(this.sender(), s -> new ArrayList()).add(message);
 		if(message.isFinalPackage()){
 			ArrayList<Byte> bytes = new ArrayList<Byte>();
 			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();

@@ -14,7 +14,7 @@ import akka.cluster.Cluster;
 import akka.cluster.ClusterEvent.CurrentClusterState;
 import akka.cluster.ClusterEvent.MemberRemoved;
 import akka.cluster.ClusterEvent.MemberUp;
-import de.hpi.ddm.structures.BloomFilter;
+import de.hpi.ddm.stru.BloomFilter;
 import de.hpi.ddm.systems.MasterSystem;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -46,7 +46,7 @@ public class Worker extends AbstractLoggingActor {
 
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class WelcomeMessage implements Serializable {
-		private static final long serialVersionUID = 834304098948609598L;
+		private static final long serialVersionUID = 834304098948609513L;
 		private BloomFilter welcomeData;
 	}
 
@@ -201,11 +201,11 @@ public class Worker extends AbstractLoggingActor {
 		for (char c : problem.pwChars.toCharArray()) {
 			chars.add(c);
 		}
-		System.out.println("creating permutations with " + problem.excludedCharForHint +" char missing");
+		//System.out.println("creating permutations with " + problem.excludedCharForHint +" char missing");
 
 		heapPermutation(chars, chars.size(), chars.size(), reducedProblem, hintMap, problem.excludedCharForHint);
 
-		System.out.println("finished creating permutations with " + problem.excludedCharForHint +" char missing");
+		//System.out.println("finished creating permutations with " + problem.excludedCharForHint +" char missing");
 
 		this.sender().tell(reducedProblem, this.self());
 	}

@@ -7,7 +7,7 @@ import com.beust.jcommander.JCommander;
 import com.beust.jcommander.ParameterException;
 
 import de.hpi.ddm.singletons.DatasetDescriptorSingleton;
-import de.hpi.ddm.structures.BloomFilter;
+import de.hpi.ddm.stru.BloomFilter;
 import de.hpi.ddm.systems.MasterSystem;
 import de.hpi.ddm.systems.WorkerSystem;
 import lombok.Data;

@@ -10,7 +10,7 @@ import akka.actor.ActorRef;
 import akka.actor.PoisonPill;
 import akka.actor.Props;
 import akka.actor.Terminated;
-import de.hpi.ddm.structures.BloomFilter;
+import de.hpi.ddm.stru.BloomFilter;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -123,7 +123,6 @@ public class Master extends AbstractLoggingActor {
 				.match(BatchMessage.class, this::handle)
 				.match(Terminated.class, this::handle)
 				.match(RegistrationMessage.class, this::handle)
-				.match(HintProblemMessage.class, this::handle)
 				.match(Worker.ReducedProblemMessage.class, this::handle)
 				.match(ResultMessage.class, this::handle)
 				// TODO: Add further messages here to share work between Master and Worker actors
@@ -243,7 +242,6 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(ResultMessage result){
 		for(Tuple2<String, String> namePw : result.data){
-			System.out.println("User with name " + namePw._1 + " has Pw " + namePw._2);
 			this.collector.tell(new Collector.CollectMessage("User with name " + namePw._1 + " has Pw " + namePw._2), this.self());
 		}
 		this.resultCounter += result.data.size();
@@ -277,10 +275,6 @@ public class Master extends AbstractLoggingActor {
 		this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.WelcomeMessage(this.welcomeData), this.sender()), this.self());
 		
 		// TODO: Assign some work to registering workers. Note that the processing of the global task might have already started.
-	}
-
-	protected void handle(HintProblemMessage problem){
-
 	}
 	
 	protected void handle(Terminated message) {

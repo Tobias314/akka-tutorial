@@ -21,7 +21,6 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import akka.cluster.Member;
 import akka.cluster.MemberStatus;
-import scala.Char;
 import scala.Tuple2;
 
 public class Worker extends AbstractLoggingActor {
@@ -154,7 +153,7 @@ public class Worker extends AbstractLoggingActor {
 			}
 			String result = testAllKLengthRec(testSet, "", testSet.size(), reducedProblem.pwLength, constrainedPw.pwHash);
 			if(result != null){
-				resultMsg.data.add(new Tuple2(constrainedPw.userName, result));
+				resultMsg.data.add(new Master.StringTuple2(constrainedPw.userName, result));
 			}
 			//System.out.println("finished handling reduced Problem");
 		}
@@ -181,6 +180,8 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.HintProblemMessage problem){
+        long pid = ProcessHandle.current().pid();
+        //System.out.println("Process ID: " + pid);
 		//System.out.println("Starting hint ecryption package");
 		ArrayList<PwWithConstraints> pwWithConstraints = new ArrayList<>();
 		HashMap <String, ArrayList<Integer>> hintMap = new HashMap<>();
@@ -195,15 +196,16 @@ public class Worker extends AbstractLoggingActor {
 		ReducedProblemMessage reducedProblem = new ReducedProblemMessage(pwWithConstraints, problem.pwLength, problem.pwChars);
 		//System.out.println("creating permutations with " + problem.excludedCharForHint +" char missing");
 
-		for(Tuple2<String, Character> perm : problem.permutationsToTry){
-			String h = hash(perm._1);
-			ArrayList<Integer> res = hintMap.get(h);
-			if(res != null){
-				for(int i : res){
-					//System.out.println("removing character " + perm._2 + "from possible characters");
-					reducedProblem.contrainedPws.get(i).notIncludedCharacters.add(perm._2);
+		for(Master.StringTuple2 suffix : problem.suffixesToTry){
+			String chars = problem.pwChars.replace(suffix._2, "");
+			ArrayList<Character> chars2 = new ArrayList<>();
+			for(char c : chars.toCharArray()){
+				if(!suffix._1.contains(Character.toString(c))){
+					chars2.add(c);
 				}
 			}
+			//System.out.println("doing heapPermutation for: ..." + suffix._1 + ", excluded is" + suffix._2);
+			heapPermutation(chars2, chars2.size(), suffix._2, suffix._1, hintMap, reducedProblem);
 		}
 
 		//System.out.println("finished creating permutations with " + problem.excludedCharForHint +" char missing");
@@ -231,31 +233,38 @@ public class Worker extends AbstractLoggingActor {
 			throw new RuntimeException(e.getMessage());
 		}
 	}
-	
-	// Generating all permutations of an array using Heap's Algorithm
-	// https://en.wikipedia.org/wiki/Heap's_algorithm
-	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	/*private void heapPermutation(char[] a, int size, int n, List<String> l) {
-		// If size is 1, store the obtained permutation
-		if (size == 1)
-			l.add(new String(a));
 
-		for (int i = 0; i < size; i++) {
-			heapPermutation(a, size - 1, n, l);
-
-			// If size is odd, swap first and last element
-			if (size % 2 == 1) {
-				char temp = a[0];
-				a[0] = a[size - 1];
-				a[size - 1] = temp;
+	void heapPermutation(ArrayList<Character> characters, int size, String currentlyAvoiding,
+						 String suffix, HashMap<String, ArrayList<Integer>> hintMap, ReducedProblemMessage reducedProblem)
+	{
+		// if size becomes 1 then prints the obtained
+		// permutation
+		if (size == 1) {
+			String prefix = "";
+			for(char c : characters){prefix += c;}
+			String perm = prefix + suffix;
+			//System.out.println("perm: " + perm + ", with missing " + currentlyAvoiding);
+			String h = hash(perm);
+			ArrayList<Integer> res = hintMap.get(h);
+			if(res != null){
+				//System.out.println("found Match");
+				for(int i : res){
+					reducedProblem.contrainedPws.get(i).notIncludedCharacters.add(currentlyAvoiding.charAt(0));
+				}
 			}
+			return;
+		}
+		for (int i = 0; i < size; i++) {
+			heapPermutation(characters, size - 1, currentlyAvoiding, suffix, hintMap, reducedProblem);
 
-			// If size is even, swap i-th and last element
+			// if size is odd, swap 0th i.e (first) and
+			// (size-1)th i.e (last) element
+			if (size % 2 == 1){
+				Collections.swap(characters, 0, size - 1);
+			}
 			else {
-				char temp = a[i];
-				a[i] = a[size - 1];
-				a[size - 1] = temp;
+				Collections.swap(characters, i, size - 1);
 			}
 		}
-	}*/
+	}
 }

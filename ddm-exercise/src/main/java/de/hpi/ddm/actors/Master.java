@@ -24,6 +24,8 @@ public class Master extends AbstractLoggingActor {
 
 	public static final int REDUCED_PROBLEM_PACKAGE_SIZE = 100;
 
+	public static final int SUFFIX_SIZE = 2;
+
 	public static Props props(final ActorRef reader, final ActorRef collector, final BloomFilter welcomeData) {
 		return Props.create(Master.class, () -> new Master(reader, collector, welcomeData));
 	}
@@ -65,6 +67,18 @@ public class Master extends AbstractLoggingActor {
 		ArrayList<String> hintHashes;
 	}
 
+	public static class StringTuple2 implements Serializable {
+		String _1 = null;
+		String _2 = null;
+
+		StringTuple2(){}
+
+		StringTuple2(String obj1, String obj2){
+			_1 = obj1;
+			_2 = obj2;
+		}
+	}
+
 	@Data @AllArgsConstructor @NoArgsConstructor
 	public static class HintProblemMessage implements Serializable {
 		private static final long serialVersionUID = 3303085451659723997L;
@@ -72,16 +86,16 @@ public class Master extends AbstractLoggingActor {
 		String pwChars;
 		int pwLength;
 		char excludedCharForHint;
-		ArrayList<Tuple2<String, Character>> permutationsToTry;
+		ArrayList<StringTuple2> suffixesToTry;
 		public HintProblemMessage shallowCopy(){
-			return new HintProblemMessage(data, pwChars, pwLength, excludedCharForHint, permutationsToTry);
+			return new HintProblemMessage(data, pwChars, pwLength, excludedCharForHint, suffixesToTry);
 		}
 	}
 
 	@Data @AllArgsConstructor @NoArgsConstructor
 	public static class ResultMessage implements Serializable {
 		private static final long serialVersionUID = 3303455451659723997L;
-		ArrayList<Tuple2<String, String>> data;
+		ArrayList<StringTuple2> data;
 	}
 	
 	/////////////////
@@ -91,6 +105,7 @@ public class Master extends AbstractLoggingActor {
 	private final ActorRef reader;
 	private final ActorRef collector;
 	private final List<ActorRef> workers;
+	private final LinkedList<ActorRef> freeWorkers = new LinkedList<>();
 	private int currentWorker;
 	private final ActorRef largeMessageProxy;
 	private final BloomFilter welcomeData;
@@ -99,8 +114,9 @@ public class Master extends AbstractLoggingActor {
 	Worker.ReducedProblemMessage mergedReducedProblem;
 	int runningHintWorkPackages = 0;
 	boolean allHintWorkPackagesSent = false;
-	ArrayList<Tuple2<String, Character>> permutation_buffer = new ArrayList<>();
-	final static int PERMUTATION_PACKAGE_SIZE = 500000;
+	ArrayList<StringTuple2> permutation_buffer = new ArrayList<>();
+	final static int PERMUTATION_PACKAGE_SIZE = 10;
+	private LinkedList<Object> workQueue = new LinkedList<>();
 
 
 	HintProblemMessage problem = new HintProblemMessage();
@@ -197,29 +213,48 @@ public class Master extends AbstractLoggingActor {
 		// TODO: Fetch further lines from the Reader
 	}
 
+	private void addFreeWorker(ActorRef worker){
+		//System.out.println("add worker");
+		freeWorkers.push(worker);
+		tryAssignWork();
+	}
+
+	private void tryAssignWork(){
+		while(!freeWorkers.isEmpty() && !workQueue.isEmpty()){
+			ActorRef w = freeWorkers.pop();
+			w.tell(workQueue.pop(), this.self());
+		}
+	}
+
 	private void distributedHintProcessing(){
 		for(int i = 0; i<problem.pwChars.length(); i++){
-			ArrayList<Character> reducedChars = new ArrayList<>();
+			//ArrayList<Character> reducedChars = new ArrayList<>();
+			String reducedChars = "";
 			char excluded = ' ';
 			for(int j = 0; j<problem.pwChars.length(); j++){
 				if(i!=j){
-					reducedChars.add(problem.pwChars.charAt(j));
+					reducedChars += problem.pwChars.charAt(j);
 				}else{
 					excluded = problem.pwChars.charAt(j);
 				}
 			}
-			heapPermutation(reducedChars, reducedChars.size(), reducedChars.size(), excluded);
+			//heapPermutation(reducedChars, reducedChars.size(), reducedChars.size(), excluded);
+			suffixPermutation(reducedChars, "", excluded);
 		}
 		scheduleHintWorkPackage();
 		allHintWorkPackagesSent = true;
 	}
 
 	private void scheduleWork(Object msg){
-		workers.get(currentWorker).tell(msg, this.self());
-		currentWorker= (currentWorker + 1) % workers.size();
+		//workers.get(currentWorker).tell(msg, this.self());
+		//currentWorker= (currentWorker + 1) % workers.size();
+		workQueue.push(msg);
+		//System.out.println("add work");
+		tryAssignWork();
 	}
 
 	protected void handle(Worker.ReducedProblemMessage reducedProblem){
+		addFreeWorker(this.sender());
 		for(int i = 0; i < reducedProblem.contrainedPws.size(); i++){
 			mergedReducedProblem.contrainedPws.get(i).notIncludedCharacters.addAll(reducedProblem.contrainedPws.get(i).notIncludedCharacters);
 		}
@@ -243,7 +278,8 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(ResultMessage result){
-		for(Tuple2<String, String> namePw : result.data){
+		this.addFreeWorker(this.sender());
+		for(StringTuple2 namePw : result.data){
 			this.collector.tell(new Collector.CollectMessage("User with name " + namePw._1 + " has Pw " + namePw._2), this.self());
 		}
 		this.resultCounter += result.data.size();
@@ -272,6 +308,7 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(RegistrationMessage message) {
 		this.context().watch(this.sender());
 		this.workers.add(this.sender());
+		this.addFreeWorker(this.sender());
 		this.log().info("Registered {}", this.sender());
 		
 		this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.WelcomeMessage(this.welcomeData), this.sender()), this.self());
@@ -287,14 +324,14 @@ public class Master extends AbstractLoggingActor {
 
 	private void scheduleHintWorkPackage(){
 		HintProblemMessage subProblem = problem.shallowCopy();
-		subProblem.permutationsToTry = permutation_buffer;
+		subProblem.suffixesToTry = permutation_buffer;
 		runningHintWorkPackages += 1;
 		scheduleWork(subProblem);
 		permutation_buffer = new ArrayList<>();
 	}
 
-	private void addPermuation(String permutation, char missingCharacter){
-		permutation_buffer.add(new Tuple2<>(permutation, missingCharacter));
+	private void addSuffix(String suffix, char missingCharacter){
+		permutation_buffer.add(new StringTuple2(suffix, Character.toString(missingCharacter)));
 		if(permutation_buffer.size()>= PERMUTATION_PACKAGE_SIZE){
 			scheduleHintWorkPackage();
 		}
@@ -304,10 +341,11 @@ public class Master extends AbstractLoggingActor {
 	{
 		// if size becomes 1 then prints the obtained
 		// permutation
-		if (size == 1) {
-			String perm = "";
-			for(Character c : characters){perm += c;}
-			addPermuation(perm, currentlyAvoiding);
+		if (size == SUFFIX_SIZE) {
+			String suffix = "";
+			for(int i = characters.size() - SUFFIX_SIZE; i< characters.size(); i++){suffix += characters.get(i);}
+			System.out.println(suffix + " with missing" + currentlyAvoiding);
+			addSuffix(suffix, currentlyAvoiding);
 			return;
 		}
 		for (int i = 0; i < size; i++) {
@@ -323,4 +361,21 @@ public class Master extends AbstractLoggingActor {
 			}
 		}
 	}
+
+
+	void suffixPermutation(String characters, String alreadyFound, char currentlyAvoiding)
+	{
+		// if size becomes 1 then prints the obtained
+		// permutation
+		if (alreadyFound.length() == SUFFIX_SIZE) {
+			//System.out.println(alreadyFound + " with missing" + currentlyAvoiding);
+			addSuffix(alreadyFound, currentlyAvoiding);
+			return;
+		}
+		for (char c : characters.toCharArray()) {
+			suffixPermutation(characters.replace(Character.toString(c), ""), alreadyFound + c, currentlyAvoiding);
+		}
+	}
+
+
 }

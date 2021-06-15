@@ -5,10 +5,8 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.*;
 
-import akka.actor.AbstractLoggingActor;
-import akka.actor.ActorRef;
-import akka.actor.ActorSelection;
-import akka.actor.Props;
+import akka.actor.*;
+import akka.japi.tuple.Tuple4;
 import de.hpi.ddm.singletons.KryoPoolSingleton;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -17,6 +15,7 @@ import lombok.NoArgsConstructor;
 import akka.stream.*;
 import akka.stream.javadsl.*;
 import org.apache.commons.lang3.tuple.Triple;
+import scala.Tuple2;
 
 public class LargeMessageProxy extends AbstractLoggingActor {
 
@@ -25,7 +24,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	////////////////////////
 
 	public static final String DEFAULT_NAME = "largeMessageProxy";
-	public static final int MESSAGE_SIZE = 100;
+	public static final int MESSAGE_SIZE = 100000;
 
 	public static Props props() {
 		return Props.create(LargeMessageProxy.class);
@@ -48,6 +47,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		private ActorRef senderProxy;
 		private ActorRef sender;
 		private ActorRef receiver;
+		private String id;
 		private byte[] data;
 		private long offset;
 		private boolean isFinalPackage = false;
@@ -57,14 +57,16 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	public static class AckMessage implements Serializable {
 		private static final long serialVersionUID = 4257807743872319855L;
 		private long bytesReceived = 0L;
+		private ActorRef receiver;
+
 	}
 
 	/////////////////
 	// Actor State //
 	/////////////////
 
-	Queue<Triple<ActorRef, ActorRef, byte[]>> messageQueue = new LinkedList<>();
-	HashMap<ActorRef, ArrayList<SendMessage>> receiverBuffer = new HashMap<>();
+	HashMap<ActorRef,Queue<Tuple4<ActorRef, ActorRef, String, byte[]>>> messageQueues = new HashMap<>();
+	HashMap<Tuple2<ActorRef, String>, ArrayList<SendMessage>> receiverBuffer = new HashMap<>();
 
 	/////////////////////
 	// Actor Lifecycle //
@@ -104,38 +106,43 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		// - But: Good, language-dependent serializers (such as kryo) are aware of byte arrays so that their serialization is very effective w.r.t. serialization time and size of serialized data.
 
 		byte[] bytes = KryoPoolSingleton.get().toBytesWithClass(message);
-		this.messageQueue.add(Triple.of(sender, receiver, bytes));
-		sendPackage(0);
+		this.messageQueues.computeIfAbsent(receiver, k -> new LinkedList<>());
+		String messageId =  UUID.randomUUID().toString();
+		this.messageQueues.get(receiver).add(new Tuple4(sender, receiver, messageId, bytes));
+		sendPackage(0, receiver);
 
 		//receiverProxy.tell(new BytesMessage<>(message, sender, receiver), this.self());
 	}
 
-	private void sendPackage(long offset){
-		Triple<ActorRef, ActorRef, byte[]> data = messageQueue.peek();
-		boolean isFinal = data.getRight().length - offset <= MESSAGE_SIZE;
-		byte[] bytes = Arrays.copyOfRange(data.getRight(), (int)offset, (int)Math.min(data.getRight().length, offset+MESSAGE_SIZE));
-		SendMessage msg = new SendMessage(this.self(), data.getLeft(), data.getMiddle(), bytes, offset, isFinal);
-		ActorSelection receiverProxy = this.context().actorSelection(data.getMiddle().path().child(DEFAULT_NAME));
+	private void sendPackage(long offset, ActorRef receiver){
+		Tuple4<ActorRef, ActorRef, String, byte[]> data = messageQueues.get(receiver).peek();
+		boolean isFinal = data.t4().length - offset <= MESSAGE_SIZE;
+		byte[] bytes = Arrays.copyOfRange(data.t4(), (int)offset, (int)Math.min(data.t4().length, offset+MESSAGE_SIZE));
+		SendMessage msg = new SendMessage(this.self(), data.t1(), data.t2(), data.t3(), bytes, offset, isFinal);
+		ActorSelection receiverProxy = this.context().actorSelection(data.t2().path().child(DEFAULT_NAME));
 		if(isFinal){
-			messageQueue.poll();
+			messageQueues.remove(receiver);
 		}
+		//System.out.println("Send message" + msg.offset + " from " + msg.sender + "with id " + msg.id);
 		receiverProxy.tell(msg, this.self());
 	}
 
 	private void handle(AckMessage message) {
-		if(!messageQueue.isEmpty()){
-			sendPackage(message.bytesReceived);
+		if(messageQueues.containsKey(message.receiver)){
+			sendPackage(message.bytesReceived, message.receiver);
 		}
 	}
 
 	private void handle(SendMessage message){
+		//System.out.println("Received message" + message.offset + " from " + message.sender + "with id " + message.id);
 		// TODO: With option a): Store the message, ask for the next chunk and, if all chunks are present, reassemble the message's content, deserialize it and pass it to the receiver.
 		// The following code assumes that the transmitted bytes are the original message, which they shouldn't be in your proper implementation ;-)
-		receiverBuffer.computeIfAbsent(this.sender(), s -> new ArrayList()).add(message);
+		Tuple2 key = new Tuple2(this.sender(), message.id);
+		receiverBuffer.computeIfAbsent(key, s -> new ArrayList()).add(message);
 		if(message.isFinalPackage()){
 			ArrayList<Byte> bytes = new ArrayList<Byte>();
 			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-			for(SendMessage msg : receiverBuffer.get(message.senderProxy)){
+			for(SendMessage msg : receiverBuffer.get(key)){
 				try {
 					outputStream.write(msg.data);
 				} catch (IOException e) {
@@ -144,6 +151,6 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 			}
 			message.receiver.tell(KryoPoolSingleton.get().fromBytes(outputStream.toByteArray()), message.sender);
 		}
-		message.senderProxy.tell(new AckMessage(message.offset + message.data.length), this.self());
+		message.senderProxy.tell(new AckMessage(message.offset + message.data.length, message.receiver), this.self());
 	}
 }

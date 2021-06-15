@@ -180,7 +180,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.HintProblemMessage problem){
-        long pid = ProcessHandle.current().pid();
+        //long pid = ProcessHandle.current().pid();
         //System.out.println("Process ID: " + pid);
 		//System.out.println("Starting hint ecryption package");
 		ArrayList<PwWithConstraints> pwWithConstraints = new ArrayList<>();

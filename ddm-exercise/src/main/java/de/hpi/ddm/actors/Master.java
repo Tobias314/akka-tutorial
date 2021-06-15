@@ -12,7 +12,6 @@ import de.hpi.ddm.stru.BloomFilter;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import scala.Tuple2;
 
 public class Master extends AbstractLoggingActor {
 
@@ -24,7 +23,7 @@ public class Master extends AbstractLoggingActor {
 
 	public static final int REDUCED_PROBLEM_PACKAGE_SIZE = 100;
 
-	public static final int SUFFIX_SIZE = 2;
+	public static final int SUFFIX_SIZE = 3;
 
 	public static Props props(final ActorRef reader, final ActorRef collector, final BloomFilter welcomeData) {
 		return Props.create(Master.class, () -> new Master(reader, collector, welcomeData));
@@ -34,7 +33,6 @@ public class Master extends AbstractLoggingActor {
 		this.reader = reader;
 		this.collector = collector;
 		this.workers = new ArrayList<>();
-		this.currentWorker = 0;
 		this.largeMessageProxy = this.context().actorOf(LargeMessageProxy.props(), LargeMessageProxy.DEFAULT_NAME);
 		this.welcomeData = welcomeData;
 	}
@@ -106,10 +104,8 @@ public class Master extends AbstractLoggingActor {
 	private final ActorRef collector;
 	private final List<ActorRef> workers;
 	private final LinkedList<ActorRef> freeWorkers = new LinkedList<>();
-	private int currentWorker;
 	private final ActorRef largeMessageProxy;
 	private final BloomFilter welcomeData;
-	private ArrayList<Worker.ReducedProblemMessage> reducedProblemList = new ArrayList();
 	private int resultCounter = 0;
 	Worker.ReducedProblemMessage mergedReducedProblem;
 	int runningHintWorkPackages = 0;
@@ -152,7 +148,6 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(StartMessage message) {
 		this.startTime = System.currentTimeMillis();
-		reducedProblemList = new ArrayList();
 		problem.data = new ArrayList<>();
 		resultCounter = 0;
 		this.reader.tell(new Reader.ReadMessage(), this.self());
@@ -238,7 +233,6 @@ public class Master extends AbstractLoggingActor {
 					excluded = problem.pwChars.charAt(j);
 				}
 			}
-			//heapPermutation(reducedChars, reducedChars.size(), reducedChars.size(), excluded);
 			suffixPermutation(reducedChars, "", excluded);
 		}
 		scheduleHintWorkPackage();
@@ -246,8 +240,6 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	private void scheduleWork(Object msg){
-		//workers.get(currentWorker).tell(msg, this.self());
-		//currentWorker= (currentWorker + 1) % workers.size();
 		workQueue.push(msg);
 		//System.out.println("add work");
 		tryAssignWork();
@@ -337,36 +329,8 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
-	void heapPermutation(ArrayList<Character> characters, int size, int n, char currentlyAvoiding)
-	{
-		// if size becomes 1 then prints the obtained
-		// permutation
-		if (size == SUFFIX_SIZE) {
-			String suffix = "";
-			for(int i = characters.size() - SUFFIX_SIZE; i< characters.size(); i++){suffix += characters.get(i);}
-			System.out.println(suffix + " with missing" + currentlyAvoiding);
-			addSuffix(suffix, currentlyAvoiding);
-			return;
-		}
-		for (int i = 0; i < size; i++) {
-			heapPermutation(characters, size - 1, n, currentlyAvoiding);
-
-			// if size is odd, swap 0th i.e (first) and
-			// (size-1)th i.e (last) element
-			if (size % 2 == 1){
-				Collections.swap(characters, 0, size - 1);
-			}
-			else {
-				Collections.swap(characters, i, size - 1);
-			}
-		}
-	}
-
-
 	void suffixPermutation(String characters, String alreadyFound, char currentlyAvoiding)
 	{
-		// if size becomes 1 then prints the obtained
-		// permutation
 		if (alreadyFound.length() == SUFFIX_SIZE) {
 			//System.out.println(alreadyFound + " with missing" + currentlyAvoiding);
 			addSuffix(alreadyFound, currentlyAvoiding);
@@ -376,6 +340,4 @@ public class Master extends AbstractLoggingActor {
 			suffixPermutation(characters.replace(Character.toString(c), ""), alreadyFound + c, currentlyAvoiding);
 		}
 	}
-
-
 }
